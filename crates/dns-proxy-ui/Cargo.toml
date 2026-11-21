@@ -1,0 +1,27 @@
+[package]
+name = "dns-proxy-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Desktop control panel for DNS Proxy"
+
+[[bin]]
+name = "dns-proxy-ui"
+path = "src/main.rs"
+
+[dependencies]
+dns-proxy-core.workspace = true
+anyhow.workspace = true
+eframe = { version = "0.31", default-features = true, features = ["default_fonts", "glow"] }
+egui = "0.31"
+image = { version = "0.25", default-features = false, features = ["png"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-service = "0.7"
+
+[build-dependencies]
+embed-resource = "3"

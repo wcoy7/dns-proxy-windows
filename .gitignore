@@ -1,0 +1,12 @@
+/target/
+**/*.rs.bk
+Cargo.lock.bak
+.idea/
+.vscode/
+*.pdb
+*.ilk
+*.exp
+*.lib
+.DS_Store
+Thumbs.db
+*.log

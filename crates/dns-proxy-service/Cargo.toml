@@ -1,0 +1,30 @@
+[package]
+name = "dns-proxy-service"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Windows service DNS proxy for DNS Proxy"
+
+[[bin]]
+name = "dns-proxy-service"
+path = "src/main.rs"
+
+[dependencies]
+dns-proxy-core.workspace = true
+anyhow.workspace = true
+hickory-proto.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+parking_lot.workspace = true
+clap = { version = "4", features = ["derive"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-service = "0.7"
+
+[build-dependencies]
+embed-resource = "3"

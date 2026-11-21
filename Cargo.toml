@@ -1,0 +1,31 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/dns-proxy-core",
+    "crates/dns-proxy-service",
+    "crates/dns-proxy-ui",
+]
+default-members = [
+    "crates/dns-proxy-core",
+    "crates/dns-proxy-service",
+    "crates/dns-proxy-ui",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["Warren Coykendall"]
+repository = "https://github.com/wcoy7/dns-proxy-windows"
+
+[workspace.dependencies]
+dns-proxy-core = { path = "crates/dns-proxy-core" }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tokio = { version = "1", features = ["full"] }
+hickory-proto = "0.25"
+dirs = "6"
+parking_lot = "0.12"

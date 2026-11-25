@@ -48,6 +48,46 @@ Binaries land in `target\release\`:
 
 Icon assets live in [`assets/`](assets/) (`dns-proxy.ico`, `dns-proxy-icon.png`) and are embedded into the Windows binaries at build time.
 
+## Windows installer (Inno Setup)
+
+A professional Setup wizard lives in [`installer/dns-proxy.iss`](installer/dns-proxy.iss). It installs the UI + service binaries under Program Files, adds Start Menu (and optional desktop) shortcuts, requests Administrator elevation, and can optionally register/start the `DnsProxy` Windows service.
+
+### Prerequisites
+
+- Release binaries from `cargo build --release`
+- [Inno Setup 6](https://jrsoftware.org/isinfo.php) (`ISCC.exe` on `PATH`, or the default install location)
+
+```powershell
+winget install --id JRSoftware.InnoSetup -e
+# or: choco install innosetup -y
+```
+
+### Build the installer
+
+```powershell
+# One-shot: release build + compile Setup EXE
+.\scripts\build-installer.ps1
+```
+
+Or manually:
+
+```powershell
+cargo build --release
+# Typical install paths (pick the one that exists on your machine):
+& "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe" .\installer\dns-proxy.iss
+# or: & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" .\installer\dns-proxy.iss
+```
+
+The Setup executable is written to:
+
+```text
+dist\DNSProxySetup-0.1.0.exe
+```
+
+(`dist/` is gitignored — do not commit the built installer.)
+
+After install: set adapter DNS to `127.0.0.1`, then `ipconfig /flushdns`. Uninstall from Apps & features; the uninstaller stops and removes the service when present.
+
 ## Quick start (console)
 
 Useful for smoke-testing without installing a service:

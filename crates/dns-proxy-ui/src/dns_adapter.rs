@@ -13,10 +13,10 @@ use serde::{Deserialize, Serialize};
 use windows::core::{GUID, PWSTR};
 use windows::Win32::Foundation::{ERROR_BUFFER_OVERFLOW, ERROR_SUCCESS, WIN32_ERROR};
 use windows::Win32::NetworkManagement::IpHelper::{
-    FreeMibTable, GetAdaptersAddresses, GetIfEntry2, GetInterfaceDnsSettings,
+    FreeInterfaceDnsSettings, GetAdaptersAddresses, GetIfEntry2, GetInterfaceDnsSettings,
     SetInterfaceDnsSettings, DNS_INTERFACE_SETTINGS, DNS_INTERFACE_SETTINGS_VERSION1,
-    DNS_SETTING_NAMESERVER, GAA_FLAG_INCLUDE_PREFIX, IF_TYPE_SOFTWARE_LOOPBACK,
-    IP_ADAPTER_ADDRESSES_LH, MIB_IF_ROW2,
+    DNS_SETTING_NAMESERVER, DNS_SETTING_PROFILE_NAMESERVER, GAA_FLAG_INCLUDE_PREFIX,
+    IF_TYPE_SOFTWARE_LOOPBACK, IP_ADAPTER_ADDRESSES_LH, MIB_IF_ROW2,
 };
 use windows::Win32::Networking::WinSock::{AF_INET, SOCKADDR, SOCKADDR_IN};
 use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
@@ -128,12 +128,17 @@ pub fn list_adapters() -> Result<Vec<AdapterDnsInfo>> {
             continue;
         }
 
-        let (dhcp_dns, servers) = read_interface_dns(&addr.guid)?;
+        let (dhcp_dns, mut servers) = read_interface_dns(&addr.guid)?;
+        // Fall back to addresses reported on the adapter when GetInterfaceDnsSettings
+        // returns empty (common when Flags were wrong or only profile DNS is set).
+        if servers.is_empty() && !addr.dns_servers.is_empty() {
+            servers = addr.dns_servers.clone();
+        }
         out.push(AdapterDnsInfo {
             guid: addr.guid.clone(),
             friendly_name: addr.friendly_name.clone(),
             if_index: addr.if_index,
-            dhcp_dns,
+            dhcp_dns: dhcp_dns && servers.is_empty(),
             servers,
             operational: addr.operational,
         });
@@ -213,9 +218,24 @@ pub fn enable_proxy_dns() -> Result<String> {
         );
     }
 
+    // Verify at least one operational adapter now lists the proxy DNS.
+    let verified = active_adapters()?
+        .into_iter()
+        .filter(|a| a.points_at_proxy())
+        .map(|a| a.friendly_name)
+        .collect::<Vec<_>>();
+    if verified.is_empty() {
+        let _ = restore_proxy_dns();
+        bail!(
+            "SetInterfaceDnsSettings reported success, but no adapter lists {PROXY_DNS} yet. \
+             DNS was rolled back. Try Run as administrator, or set DNS manually."
+        );
+    }
+
     Ok(format!(
-        "Set preferred DNS to {PROXY_DNS} on: {}",
-        changed.join(", ")
+        "Set preferred DNS to {PROXY_DNS} on: {} (verified: {})",
+        changed.join(", "),
+        verified.join(", ")
     ))
 }
 
@@ -273,6 +293,7 @@ struct RawAdapter {
     if_type: u32,
     operational: bool,
     unicast: Vec<String>,
+    dns_servers: Vec<String>,
 }
 
 fn adapter_addresses() -> Result<Vec<RawAdapter>> {
@@ -312,6 +333,20 @@ fn adapter_addresses() -> Result<Vec<RawAdapter>> {
             u = ua.Next;
         }
 
+        let mut dns_servers = Vec::new();
+        let mut d = a.FirstDnsServerAddress;
+        while !d.is_null() {
+            let da = unsafe { &*d };
+            if let Some(ip) = sockaddr_ipv4(da.Address.lpSockaddr) {
+                let s = ip.to_string();
+                // Skip link-local fec0:: / site-local DNS placeholders Windows sometimes lists.
+                if s != "fec0:0:0:ffff::1" && s != "fec0:0:0:ffff::2" && s != "fec0:0:0:ffff::3" {
+                    dns_servers.push(s);
+                }
+            }
+            d = da.Next;
+        }
+
         out.push(RawAdapter {
             guid,
             friendly_name,
@@ -319,6 +354,7 @@ fn adapter_addresses() -> Result<Vec<RawAdapter>> {
             if_type: a.IfType,
             operational,
             unicast,
+            dns_servers,
         });
 
         cur = a.Next;
@@ -361,61 +397,63 @@ fn parse_guid(s: &str) -> Result<GUID> {
     Ok(GUID::from_u128(u))
 }
 
+fn split_dns_list(raw: &str) -> Vec<String> {
+    raw.split(|c: char| c == ',' || c == ' ' || c == ';')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
 fn read_interface_dns(guid_str: &str) -> Result<(bool, Vec<String>)> {
     let guid = parse_guid(guid_str)?;
+    // MSDN: for GetInterfaceDnsSettings set ONLY Version; Flags must be empty.
     let mut settings = DNS_INTERFACE_SETTINGS {
         Version: DNS_INTERFACE_SETTINGS_VERSION1,
-        Flags: u64::from(DNS_SETTING_NAMESERVER),
         ..Default::default()
     };
     let status = unsafe { GetInterfaceDnsSettings(guid, &mut settings) };
     if status != ERROR_SUCCESS {
-        tracing::debug!("GetInterfaceDnsSettings({guid_str}) failed: {status:?}");
+        tracing::warn!("GetInterfaceDnsSettings({guid_str}) failed: {status:?}");
         return Ok((true, Vec::new()));
     }
 
-    let servers_raw = unsafe { pwstr_to_string(settings.NameServer) };
+    let name_server = unsafe { pwstr_to_string(settings.NameServer) };
+    let profile_server = unsafe { pwstr_to_string(settings.ProfileNameServer) };
+    // MSDN: free with FreeInterfaceDnsSettings (not FreeMibTable / per-string free).
     unsafe {
-        free_dns_settings_strings(&mut settings);
+        FreeInterfaceDnsSettings(&mut settings);
     }
 
-    let servers: Vec<String> = servers_raw
-        .split(|c: char| c == ',' || c == ' ' || c == ';')
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .collect();
+    let mut servers = split_dns_list(&name_server);
+    if servers.is_empty() {
+        servers = split_dns_list(&profile_server);
+    }
 
+    // Empty NameServer/ProfileNameServer ⇒ Windows is using DHCP / automatic DNS.
     Ok((servers.is_empty(), servers))
-}
-
-unsafe fn free_dns_settings_strings(settings: &mut DNS_INTERFACE_SETTINGS) {
-    // MSDN: free NameServer / SearchList / Domain via FreeMibTable.
-    for ptr in [
-        &mut settings.NameServer,
-        &mut settings.SearchList,
-        &mut settings.Domain,
-    ] {
-        if !ptr.is_null() {
-            FreeMibTable(ptr.0 as *const std::ffi::c_void);
-            *ptr = PWSTR::null();
-        }
-    }
 }
 
 fn set_static_dns(guid_str: &str, servers: &[String]) -> Result<()> {
     let guid = parse_guid(guid_str)?;
     let joined = servers.join(",");
     let mut wide: Vec<u16> = joined.encode_utf16().chain(std::iter::once(0)).collect();
+    // Clear profile DNS as well so Win11 profile servers don't override interface DNS.
+    let mut empty_profile: Vec<u16> = vec![0];
     let settings = DNS_INTERFACE_SETTINGS {
         Version: DNS_INTERFACE_SETTINGS_VERSION1,
-        Flags: u64::from(DNS_SETTING_NAMESERVER),
+        Flags: u64::from(DNS_SETTING_NAMESERVER | DNS_SETTING_PROFILE_NAMESERVER),
         NameServer: PWSTR(wide.as_mut_ptr()),
+        ProfileNameServer: PWSTR(empty_profile.as_mut_ptr()),
         ..Default::default()
     };
     let status = unsafe { SetInterfaceDnsSettings(guid, &settings) };
     if status != ERROR_SUCCESS {
-        bail!("SetInterfaceDnsSettings({guid_str}) static failed: {status:?}");
+        bail!(
+            "SetInterfaceDnsSettings({guid_str}) static failed: {status:?} \
+             (0x{:08X})",
+            status.0
+        );
     }
     Ok(())
 }
@@ -423,15 +461,21 @@ fn set_static_dns(guid_str: &str, servers: &[String]) -> Result<()> {
 fn set_dhcp_dns(guid_str: &str) -> Result<()> {
     let guid = parse_guid(guid_str)?;
     let mut wide: Vec<u16> = vec![0];
+    let mut empty_profile: Vec<u16> = vec![0];
     let settings = DNS_INTERFACE_SETTINGS {
         Version: DNS_INTERFACE_SETTINGS_VERSION1,
-        Flags: u64::from(DNS_SETTING_NAMESERVER),
+        Flags: u64::from(DNS_SETTING_NAMESERVER | DNS_SETTING_PROFILE_NAMESERVER),
         NameServer: PWSTR(wide.as_mut_ptr()),
+        ProfileNameServer: PWSTR(empty_profile.as_mut_ptr()),
         ..Default::default()
     };
     let status = unsafe { SetInterfaceDnsSettings(guid, &settings) };
     if status != ERROR_SUCCESS {
-        bail!("SetInterfaceDnsSettings({guid_str}) DHCP failed: {status:?}");
+        bail!(
+            "SetInterfaceDnsSettings({guid_str}) DHCP failed: {status:?} \
+             (0x{:08X})",
+            status.0
+        );
     }
     Ok(())
 }
@@ -502,5 +546,45 @@ mod tests {
     #[test]
     fn parse_guid_accepts_braced() {
         assert!(parse_guid("{AABBCCDD-EEFF-1122-3344-556677889900}").is_ok());
+    }
+
+    #[test]
+    fn split_dns_list_commas_and_spaces() {
+        assert_eq!(
+            split_dns_list("1.1.1.1, 8.8.8.8 9.9.9.9"),
+            vec!["1.1.1.1", "8.8.8.8", "9.9.9.9"]
+        );
+    }
+
+    /// Live Win32 probe — run with: cargo test -p dns-proxy-ui live_dns_roundtrip -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn live_dns_roundtrip() {
+        let adapters = list_adapters().expect("list_adapters");
+        assert!(
+            !adapters.is_empty(),
+            "expected at least one non-loopback adapter"
+        );
+        for a in &adapters {
+            eprintln!(
+                "adapter {} guid={} up={} dhcp={} servers={:?}",
+                a.friendly_name, a.guid, a.operational, a.dhcp_dns, a.servers
+            );
+        }
+        if !is_elevated() {
+            eprintln!("not elevated — skipping set/restore");
+            return;
+        }
+        let before = active_adapters().expect("active");
+        assert!(!before.is_empty(), "no operational adapters");
+        let msg = enable_proxy_dns().expect("enable_proxy_dns");
+        eprintln!("enable: {msg}");
+        let after = active_adapters().expect("active after");
+        assert!(
+            after.iter().any(|a| a.points_at_proxy()),
+            "expected an adapter pointing at {PROXY_DNS}, got {after:?}"
+        );
+        let restore = restore_proxy_dns().expect("restore_proxy_dns");
+        eprintln!("restore: {restore}");
     }
 }

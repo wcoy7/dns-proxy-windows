@@ -207,10 +207,12 @@ impl DnsProxyApp {
     }
 
     fn refresh_adapters(&mut self) {
+        // Do NOT clear dns_error here — enable/disable failures were previously wiped
+        // by a successful adapter scan (and by the 8s periodic refresh), which made
+        // "Use DNS Proxy" look like a silent no-op.
         match dns_adapter::list_adapters() {
             Ok(list) => {
                 self.adapters = list;
-                self.dns_error.clear();
             }
             Err(err) => {
                 self.dns_error = format!("Adapter scan failed: {err}");
@@ -449,16 +451,42 @@ impl eframe::App for DnsProxyApp {
                     ui.heading("Network DNS");
                     ui.label("Point active adapters at this machine's proxy (127.0.0.1).");
 
+                    let elevated = dns_adapter::is_elevated();
+                    let service_running = service_ctl::is_running();
+                    if !elevated {
+                        ui.colored_label(
+                            egui::Color32::from_rgb(180, 120, 40),
+                            "Not elevated — right-click dns-proxy-ui.exe → Run as administrator, then try again.",
+                        );
+                    }
+                    if !service_running {
+                        ui.colored_label(
+                            egui::Color32::from_rgb(180, 120, 40),
+                            "Proxy service is not running — Start it below before enabling Use DNS Proxy.",
+                        );
+                    }
+
                     let mut want = self.use_dns_proxy;
-                    if ui
-                        .checkbox(&mut want, "Use DNS Proxy (set preferred DNS to 127.0.0.1)")
-                        .changed()
-                    {
+                    let response = ui.checkbox(
+                        &mut want,
+                        "Use DNS Proxy (set preferred DNS to 127.0.0.1)",
+                    );
+                    if response.changed() {
                         if want {
                             self.enable_dns_proxy();
                         } else {
                             self.disable_dns_proxy();
                         }
+                    }
+                    if response.hovered() {
+                        let tip = if !elevated {
+                            "Requires Administrator elevation."
+                        } else if !service_running && !self.use_dns_proxy {
+                            "Start the DNS Proxy Windows service first."
+                        } else {
+                            "When enabled, active adapters use 127.0.0.1. Disable restores the previous DNS."
+                        };
+                        response.on_hover_text(tip);
                     }
 
                     ui.add_space(4.0);
@@ -473,9 +501,14 @@ impl eframe::App for DnsProxyApp {
                         if ui.button("Restore previous DNS").clicked() {
                             self.disable_dns_proxy();
                         }
+                        if !self.dns_error.is_empty()
+                            && ui.button("Clear error").clicked()
+                        {
+                            self.dns_error.clear();
+                        }
                     });
                     ui.small(
-                        "Requires Administrator. Previous DNS is saved under %ProgramData%\\DNS Proxy\\dns-backup.json.",
+                        "Requires Administrator + running service. Previous DNS is saved under %ProgramData%\\DNS Proxy\\dns-backup.json.",
                     );
                 });
 

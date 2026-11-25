@@ -393,18 +393,25 @@ impl eframe::App for DnsProxyApp {
             return;
         }
 
-        // Periodic light refresh so status stays honest while the window is open.
-        // Also watch for a dead proxy while adapters still point at 127.0.0.1.
-        if self.window.is_visible() && self.last_adapter_refresh.elapsed() > Duration::from_secs(5)
-        {
-            self.refresh_adapters();
-            self.refresh_service_status();
+        // Watchdog must run even when minimized to tray — otherwise a dead proxy
+        // leaves adapters on 127.0.0.1 with no UI refresh to restore DNS.
+        let watchdog_every = if self.window.is_visible() {
+            Duration::from_secs(5)
+        } else {
+            Duration::from_secs(8)
+        };
+        if self.last_adapter_refresh.elapsed() > watchdog_every {
+            if self.window.is_visible() {
+                self.refresh_adapters();
+                self.refresh_service_status();
+            }
             self.watchdog_proxy_or_restore();
+            self.last_adapter_refresh = Instant::now();
         }
 
-        // Keep receiving tray events while hidden.
+        // Keep receiving tray events / watchdog ticks while hidden.
         if !self.window.is_visible() {
-            ctx.request_repaint_after(Duration::from_millis(400));
+            ctx.request_repaint_after(Duration::from_secs(2));
         }
 
         egui::CentralPanel::default().show(ctx, |ui| {

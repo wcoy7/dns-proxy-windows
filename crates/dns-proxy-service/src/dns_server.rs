@@ -56,18 +56,44 @@ pub async fn run_dns_proxy(state: Arc<RuntimeState>) -> Result<()> {
 }
 
 /// Serve on an already-bound socket (used by the Windows service after StartPending → bind).
+///
+/// **Important:** transient `recv_from` errors (common on Windows UDP, e.g. ICMP
+/// port-unreachable mapped as connection reset) must NOT tear down the service.
+/// Exiting this loop stops DnsProxy while adapters may still point at 127.0.0.1.
 pub async fn run_dns_proxy_on_socket(state: Arc<RuntimeState>, sock: Arc<UdpSocket>) -> Result<()> {
     let mut buf = vec![0u8; MAX_UDP];
+    let mut consecutive_recv_errors: u32 = 0;
     loop {
-        let (len, peer) = sock.recv_from(&mut buf).await?;
-        let packet = buf[..len].to_vec();
-        let state = Arc::clone(&state);
-        let sock = Arc::clone(&sock);
-        tokio::spawn(async move {
-            if let Err(err) = handle_query(&state, &sock, peer, &packet).await {
-                debug!(%peer, error = %err, "query handling failed");
+        match sock.recv_from(&mut buf).await {
+            Ok((len, peer)) => {
+                consecutive_recv_errors = 0;
+                let packet = buf[..len].to_vec();
+                let state = Arc::clone(&state);
+                let sock = Arc::clone(&sock);
+                tokio::spawn(async move {
+                    if let Err(err) = handle_query(&state, &sock, peer, &packet).await {
+                        debug!(%peer, error = %err, "query handling failed");
+                    }
+                });
             }
-        });
+            Err(err) => {
+                consecutive_recv_errors = consecutive_recv_errors.saturating_add(1);
+                warn!(
+                    error = %err,
+                    consecutive_recv_errors,
+                    "UDP recv_from failed — continuing (will not stop the service)"
+                );
+                // Brief backoff so a wedged socket cannot spin the CPU.
+                let delay_ms = (50u64 * u64::from(consecutive_recv_errors.min(20))).min(1_000);
+                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                // Only give up after a prolonged hard failure streak (e.g. socket closed).
+                if consecutive_recv_errors >= 100 {
+                    return Err(err).context(
+                        "UDP recv_from failed repeatedly — listen socket likely closed",
+                    );
+                }
+            }
+        }
     }
 }
 

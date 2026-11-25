@@ -203,7 +203,10 @@ If web/ping fail after enabling **Use DNS Proxy**, the proxy is probably not ans
 
 ```powershell
 .\scripts\restore-system-dns.ps1
+.\scripts\diagnose-dns-proxy-service.ps1
 ```
+
+Service diagnostics also land in `%ProgramData%\DNS Proxy\service.log` (and `service-panic.txt` on panic). The service is configured to **auto-restart** on unexpected exit; the UI watchdog restores adapter DNS if the proxy dies while Use DNS Proxy is active (including when minimized to tray).
 
 Then fix/start the service and only re-enable Use DNS Proxy after `.\scripts\smoke-dns-proxy.ps1` passes.
 

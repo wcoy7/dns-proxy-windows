@@ -995,7 +995,7 @@ dependencies = [
 
 [[package]]
 name = "dns-proxy-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "dirs",
@@ -1006,7 +1006,7 @@ dependencies = [
 
 [[package]]
 name = "dns-proxy-service"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -1024,7 +1024,7 @@ dependencies = [
 
 [[package]]
 name = "dns-proxy-ui"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "dns-proxy-core",

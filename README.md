@@ -8,7 +8,7 @@ Point your machine at `127.0.0.1`, pick Google / Cloudflare / OpenDNS (or your o
   <img src="assets/dns-proxy-icon.png" alt="DNS Proxy icon" width="128" height="128" />
 </p>
 
-**Current version: 0.2.0**
+**Current version: 0.2.1**
 
 ## Features
 
@@ -20,7 +20,7 @@ Point your machine at `127.0.0.1`, pick Google / Cloudflare / OpenDNS (or your o
 - **System tray control panel** — lives in the notification area; close hides to tray, Quit exits
 - **Auto DNS switch** — one click to point active adapters at `127.0.0.1`, with restore of the previous settings
 - **Shared config** — JSON under `%ProgramData%\DNS Proxy\` (all Windows logins)
-- **Windows installer** — Inno Setup packaging to `dist\DNSProxySetup-0.2.0.exe`
+- **Windows installer** — Inno Setup packaging to `dist\DNSProxySetup-0.2.1-<arch>.exe` (`arm64` or `x64`)
 
 ## Workspace layout
 
@@ -32,20 +32,33 @@ Point your machine at `127.0.0.1`, pick Google / Cloudflare / OpenDNS (or your o
 
 ## Prerequisites
 
-- Windows 10 / 11
-- [Rust](https://rustup.rs/) (stable, edition 2021+)
+- Windows 10 / 11 (**x64 or ARM64** — match the Setup arch to your PC)
+- [Rust](https://rustup.rs/) (stable, edition 2021+) with the host MSVC target
 - **Administrator** privileges to bind UDP port `53`, install/control the Windows service, and change adapter DNS
 
 > Binding to port 53, registering a Windows service, and switching adapter DNS all require elevation (UAC).
+
+### Architecture
+
+| PC (`$env:PROCESSOR_ARCHITECTURE`) | Rust triple | Setup filename |
+|---|---|---|
+| `ARM64` | `aarch64-pc-windows-msvc` | `DNSProxySetup-<ver>-arm64.exe` |
+| `AMD64` | `x86_64-pc-windows-msvc` | `DNSProxySetup-<ver>-x64.exe` |
+
+Installing the wrong arch produces **CreateProcess failed: code 216** (“This version of %1 is not compatible…”), especially from Setup’s post-install `init-config` / service steps. Always use `.\scripts\build-installer.ps1` on the target machine (or pass `-TargetArch arm64|x64`).
 
 ## Build
 
 ```powershell
 cd "C:\Users\Warren\Documents\Projects\DNS Proxy"
+# Host-native (recommended):
 cargo build --release
+# Or explicit (same triples the installer script uses):
+cargo build --release --target aarch64-pc-windows-msvc   # Windows on Arm
+cargo build --release --target x86_64-pc-windows-msvc    # x64
 ```
 
-Binaries land in `target\release\`:
+Host-native binaries land in `target\release\`. Explicit `--target` builds land in `target\<triple>\release\`:
 
 - `dns-proxy-service.exe`
 - `dns-proxy-ui.exe`
@@ -60,14 +73,16 @@ Packaging lives under [`installer/`](installer/):
 |---|---|
 | [`installer/dns-proxy.iss`](installer/dns-proxy.iss) | Inno Setup script (AppId, icons, files, shortcuts, ProgramData ACLs, optional service) |
 | [`installer/post-install-notes.txt`](installer/post-install-notes.txt) | Shown in the Setup wizard before install |
-| [`scripts/build-installer.ps1`](scripts/build-installer.ps1) | `cargo build --release` + compile with `ISCC.exe` |
+| [`scripts/build-installer.ps1`](scripts/build-installer.ps1) | Detects OS arch, `cargo build --release --target …`, compiles with Inno Setup **7+** |
 
 The Setup EXE installs UI + service binaries to **Program Files\DNS Proxy**, creates `%ProgramData%\DNS Proxy` with **Users Modify** ACL, adds a Start Menu shortcut (optional desktop shortcut), requests **Administrator** elevation, and can optionally register/start the `DnsProxy` Windows service. Uninstall (Apps & features) stops and removes the service when present.
 
+Each Setup is **single-arch** (`-arm64` or `-x64`). The compiler emits a **64-bit (x64) Setup** (`SetupArchitecture=x64`) so post-install `[Run]` can launch native Arm64/x64 app binaries (a 32-bit Setup hits CreateProcess **216** on Arm64).
+
 ### Build-time prerequisites
 
-- Release binaries from `cargo build --release` (the `.iss` script errors if they are missing)
-- [Inno Setup 6](https://jrsoftware.org/isinfo.php) — needed only to **compile** the installer, not to run the installed app
+- Rust target for the chosen arch (`rustup target add aarch64-pc-windows-msvc` or `x86_64-pc-windows-msvc`)
+- [Inno Setup 7+](https://jrsoftware.org/isinfo.php) — required to compile a 64-bit Setup (needed only to **compile**, not to run the installed app)
 
 ```powershell
 winget install --id JRSoftware.InnoSetup -e
@@ -77,28 +92,35 @@ winget install --id JRSoftware.InnoSetup -e
 ### Build the installer
 
 ```powershell
-# One-shot: release build + compile Setup EXE
+# One-shot: host-arch release build + Setup EXE
 .\scripts\build-installer.ps1
+
+# Or force an arch (cross-build when the Rust target is installed):
+.\scripts\build-installer.ps1 -TargetArch arm64
+.\scripts\build-installer.ps1 -TargetArch x64
 ```
 
 Or manually:
 
 ```powershell
-cargo build --release
-# Typical ISCC paths (pick the one that exists on your machine):
-& "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe" .\installer\dns-proxy.iss
-# or: & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" .\installer\dns-proxy.iss
+$triple = "aarch64-pc-windows-msvc"   # or x86_64-pc-windows-msvc
+cargo build --release --target $triple
+& "$env:LOCALAPPDATA\Programs\Inno Setup 7\ISCC.exe" `
+  /DAppVersion=0.2.1 /DTargetArch=arm64 `
+  /DSourceRoot=..\target\$triple\release `
+  .\installer\dns-proxy.iss
 ```
 
 Output (gitignored under `dist/`):
 
 ```text
-dist\DNSProxySetup-0.2.0.exe
+dist\DNSProxySetup-0.2.1-arm64.exe   # on Windows on Arm
+dist\DNSProxySetup-0.2.1-x64.exe     # on x64 Windows
 ```
 
 ### Install and run
 
-1. Run `dist\DNSProxySetup-0.2.0.exe` (UAC elevation required).
+1. Run the Setup that matches this PC (`…-arm64.exe` or `…-x64.exe`; UAC elevation required).
 2. On **Additional Tasks**, optionally enable:
    - desktop shortcut
    - **Install and start the DNS Proxy Windows service**
@@ -265,7 +287,7 @@ Manual:
 
 To undo, use **Restore previous DNS** / uncheck **Use DNS Proxy**, or set DNS back to Automatic (DHCP), then stop/uninstall the service.
 
-## How to test (0.2.0)
+## How to test (0.2.1)
 
 ### Tray
 

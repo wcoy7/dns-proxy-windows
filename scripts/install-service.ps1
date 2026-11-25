@@ -3,12 +3,24 @@ $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
 Set-Location $Root
 
-Write-Host "Building release binaries..." -ForegroundColor Cyan
-cargo build --release
+$osArch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
+$triple = if ($osArch -match 'Arm64' -or $env:PROCESSOR_ARCHITECTURE -eq 'ARM64') {
+    "aarch64-pc-windows-msvc"
+} else {
+    "x86_64-pc-windows-msvc"
+}
+
+Write-Host "Building release binaries ($triple)..." -ForegroundColor Cyan
+rustup target add $triple | Out-Null
+cargo build --release --target $triple
 if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
 
-$svc = Join-Path $Root "target\release\dns-proxy-service.exe"
-if (-not (Test-Path $svc)) { throw "Missing $svc" }
+$candidates = @(
+    (Join-Path $Root "target\$triple\release\dns-proxy-service.exe"),
+    (Join-Path $Root "target\release\dns-proxy-service.exe")
+)
+$svc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $svc) { throw "Missing dns-proxy-service.exe under target\$triple\release or target\release" }
 
 Write-Host "Initializing config (if needed)..." -ForegroundColor Cyan
 & $svc init-config

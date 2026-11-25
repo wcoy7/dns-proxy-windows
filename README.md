@@ -8,7 +8,9 @@ Point your machine at `127.0.0.1`, pick Google / Cloudflare / OpenDNS (or your o
   <img src="assets/dns-proxy-icon.png" alt="DNS Proxy icon" width="128" height="128" />
 </p>
 
-**Current version: 0.2.1**
+**Current version: 0.2.2**
+
+0.2.2 ships arch-correct Setups (`-x64` / `-arm64`), a reliable **Use DNS Proxy** toggle (verified adapter DNS + clear errors), and outage hardening (probe before/after enable, tray watchdog, service bind-before-Running, UDP recv resilience). For an Intel/AMD PC always install `DNSProxySetup-0.2.2-x64.exe`.
 
 ## Features
 
@@ -20,7 +22,7 @@ Point your machine at `127.0.0.1`, pick Google / Cloudflare / OpenDNS (or your o
 - **System tray control panel** — lives in the notification area; close hides to tray, Quit exits
 - **Auto DNS switch** — one click to point active adapters at `127.0.0.1`, with restore of the previous settings
 - **Shared config** — JSON under `%ProgramData%\DNS Proxy\` (all Windows logins)
-- **Windows installer** — Inno Setup packaging to `dist\DNSProxySetup-0.2.1-<arch>.exe` (`arm64` or `x64`)
+- **Windows installer** — Inno Setup packaging to `dist\DNSProxySetup-0.2.2-<arch>.exe` (`arm64` or `x64`)
 
 ## Workspace layout
 
@@ -115,7 +117,7 @@ Or manually:
 $triple = "aarch64-pc-windows-msvc"   # or x86_64-pc-windows-msvc
 cargo build --release --target $triple
 & "$env:LOCALAPPDATA\Programs\Inno Setup 7\ISCC.exe" `
-  /DAppVersion=0.2.1 /DTargetArch=arm64 `
+  /DAppVersion=0.2.2 /DTargetArch=arm64 `
   /DSourceRoot=..\target\$triple\release `
   .\installer\dns-proxy.iss
 ```
@@ -123,8 +125,8 @@ cargo build --release --target $triple
 Output (gitignored under `dist/`):
 
 ```text
-dist\DNSProxySetup-0.2.1-arm64.exe   # on Windows on Arm
-dist\DNSProxySetup-0.2.1-x64.exe     # on x64 Windows
+dist\DNSProxySetup-0.2.2-arm64.exe   # on Windows on Arm
+dist\DNSProxySetup-0.2.2-x64.exe     # on x64 Windows
 ```
 
 ### Install and run
@@ -309,7 +311,7 @@ Manual:
 
 To undo, use **Restore previous DNS** / uncheck **Use DNS Proxy**, or set DNS back to Automatic (DHCP), then stop/uninstall the service.
 
-## How to test (0.2.1)
+## How to test (0.2.2)
 
 ### Tray
 

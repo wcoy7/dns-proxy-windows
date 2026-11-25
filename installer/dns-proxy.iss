@@ -3,7 +3,7 @@
 ;   .\scripts\build-installer.ps1
 ; Or manually (after cargo build --release --target <triple>):
 ;   & "$env:LOCALAPPDATA\Programs\Inno Setup 7\ISCC.exe" `
-;       /DAppVersion=0.2.1 /DTargetArch=arm64 `
+;       /DAppVersion=0.2.2 /DTargetArch=arm64 `
 ;       /DSourceRoot=..\target\aarch64-pc-windows-msvc\release `
 ;       installer\dns-proxy.iss
 ;
@@ -19,7 +19,7 @@
 
 #define MyAppName "DNS Proxy"
 #ifndef AppVersion
-  #define AppVersion "0.2.1"
+  #define AppVersion "0.2.2"
 #endif
 #define MyAppVersion AppVersion
 #define MyAppPublisher "Warren Coykendall (wcoy7)"

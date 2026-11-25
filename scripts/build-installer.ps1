@@ -9,7 +9,7 @@
   installer\dns-proxy.iss.
 
   Output: dist\DNSProxySetup-<version>-<arch>.exe
-    e.g. dist\DNSProxySetup-0.2.1-arm64.exe on Windows on Arm.
+    e.g. dist\DNSProxySetup-0.2.2-arm64.exe on Windows on Arm.
 
 .PARAMETER TargetArch
   Optional override: arm64 | x64. Default = this OS architecture.

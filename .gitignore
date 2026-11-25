@@ -1,4 +1,6 @@
 /target/
+/dist/
+/installer/output/
 **/*.rs.bk
 Cargo.lock.bak
 .idea/

@@ -1,0 +1,32 @@
+DNS Proxy Setup (0.2.0)
+
+After installation:
+
+1. Optionally check "Install and start the DNS Proxy Windows service"
+   on the Select Additional Tasks page (requires Administrator — this
+   installer already requests elevation).
+
+2. Or do it later from an elevated PowerShell in the install folder:
+     .\dns-proxy-service.exe init-config
+     .\dns-proxy-service.exe install
+     .\dns-proxy-service.exe start
+
+3. Open the DNS Proxy control panel (Start Menu or system tray) to choose
+   upstreams and block lists. Saving config restarts a running service.
+
+4. Point adapters at the proxy:
+   - Easiest: in the control panel, enable "Use DNS Proxy"
+     (sets preferred DNS to 127.0.0.1; requires elevation + running service)
+   - Or manually: Settings → Network & Internet → adapter → DNS → Manual → 127.0.0.1
+   Then run:  ipconfig /flushdns
+
+5. Closing the window hides to the tray. Use Quit (tray menu) to exit;
+   Quit restores previous DNS when a backup exists.
+
+6. To undo: uncheck "Use DNS Proxy" (or Quit), then uninstall from
+   Apps & features (the uninstaller stops and removes the service).
+
+Shared config (all Windows logins):
+  %ProgramData%\DNS Proxy\config.json
+A one-time migration copies an older %LOCALAPPDATA%\DNS Proxy\config.json
+if the ProgramData file is missing.

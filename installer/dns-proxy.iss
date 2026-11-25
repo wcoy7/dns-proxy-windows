@@ -5,7 +5,7 @@
 ;   .\scripts\build-installer.ps1
 
 #define MyAppName "DNS Proxy"
-#define MyAppVersion "0.1.0"
+#define MyAppVersion "0.2.0"
 #define MyAppPublisher "Warren Coykendall (wcoy7)"
 #define MyAppURL "https://github.com/wcoy7/dns-proxy-windows"
 #define MyAppExeName "dns-proxy-ui.exe"
@@ -77,15 +77,20 @@ Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "
 Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\assets\dns-proxy.ico"; Tasks: desktopicon
 
+[Dirs]
+; Shared machine-wide config (Users get Modify so any login can edit settings)
+Name: "{commonappdata}\{#MyAppName}"; Permissions: users-modify
+
 [Run]
-; Always ensure a default per-user config exists
-Filename: "{app}\{#MyAppServiceExe}"; Parameters: "init-config"; StatusMsg: "Initializing config..."; Flags: runhidden waituntilterminated
+; Always ensure a default shared ProgramData config exists (migrates LOCALAPPDATA once)
+Filename: "{app}\{#MyAppServiceExe}"; Parameters: "init-config"; StatusMsg: "Initializing shared config..."; Flags: runhidden waituntilterminated
 ; Optional service registration (requires the admin elevation already granted to Setup)
 Filename: "{app}\{#MyAppServiceExe}"; Parameters: "install"; StatusMsg: "Installing Windows service..."; Flags: runhidden waituntilterminated; Tasks: installservice
 Filename: "{app}\{#MyAppServiceExe}"; Parameters: "start"; StatusMsg: "Starting Windows service..."; Flags: runhidden waituntilterminated; Tasks: installservice
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName} control panel"; Flags: nowait postinstall skipifsilent
 
 [UninstallRun]
-; Stop and remove the service before deleting files (best-effort)
+; Stop and remove the service before deleting files (best-effort).
+; Prefer Quit / uncheck "Use DNS Proxy" in the UI first so adapter DNS is restored.
 Filename: "{app}\{#MyAppServiceExe}"; Parameters: "stop"; RunOnceId: "StopDnsProxyService"; Flags: runhidden waituntilterminated skipifdoesntexist
 Filename: "{app}\{#MyAppServiceExe}"; Parameters: "uninstall"; RunOnceId: "UninstallDnsProxyService"; Flags: runhidden waituntilterminated skipifdoesntexist

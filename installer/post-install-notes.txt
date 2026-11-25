@@ -1,4 +1,4 @@
-DNS Proxy Setup
+DNS Proxy Setup (0.2.0)
 
 After installation:
 
@@ -11,15 +11,22 @@ After installation:
      .\dns-proxy-service.exe install
      .\dns-proxy-service.exe start
 
-3. Open the DNS Proxy control panel from the Start Menu to choose
-   upstreams and block lists. Restart the service after saving config.
+3. Open the DNS Proxy control panel (Start Menu or system tray) to choose
+   upstreams and block lists. Saving config restarts a running service.
 
-4. Point your network adapter DNS to 127.0.0.1:
-     Settings → Network & Internet → your adapter → DNS → Manual
+4. Point adapters at the proxy:
+   - Easiest: in the control panel, enable "Use DNS Proxy"
+     (sets preferred DNS to 127.0.0.1; requires elevation + running service)
+   - Or manually: Settings → Network & Internet → adapter → DNS → Manual → 127.0.0.1
    Then run:  ipconfig /flushdns
 
-5. To undo: restore DNS to Automatic (DHCP), then uninstall DNS Proxy
-   from Apps & features (the uninstaller stops and removes the service).
+5. Closing the window hides to the tray. Use Quit (tray menu) to exit;
+   Quit restores previous DNS when a backup exists.
 
-Config is stored per-user at:
-  %LOCALAPPDATA%\DNS Proxy\config.json
+6. To undo: uncheck "Use DNS Proxy" (or Quit), then uninstall from
+   Apps & features (the uninstaller stops and removes the service).
+
+Shared config (all Windows logins):
+  %ProgramData%\DNS Proxy\config.json
+A one-time migration copies an older %LOCALAPPDATA%\DNS Proxy\config.json
+if the ProgramData file is missing.

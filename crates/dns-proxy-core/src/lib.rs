@@ -7,7 +7,7 @@ mod upstream;
 
 pub use blocklist::{BlockCategory, BlockEngine};
 pub use config::{AppConfig, BlockMode, BlockSettings, UpstreamChoice};
-pub use paths::{config_path, default_config_dir, ensure_config_dir};
+pub use paths::{config_path, default_config_dir, ensure_config_dir, legacy_config_dir};
 pub use upstream::{UpstreamPreset, UPSTREAM_PRESETS};
 
 /// Human-readable product name.

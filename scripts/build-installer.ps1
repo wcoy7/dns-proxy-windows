@@ -5,7 +5,7 @@
 
 .DESCRIPTION
   Runs `cargo build --release`, locates ISCC.exe (Inno Setup 6), and
-  compiles installer\dns-proxy.iss. Output: dist\DNSProxySetup-0.1.0.exe
+  compiles installer\dns-proxy.iss. Output: dist\DNSProxySetup-<version>.exe
 #>
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot

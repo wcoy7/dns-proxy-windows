@@ -19,6 +19,10 @@ mod win {
         }
     }
 
+    pub fn is_running() -> bool {
+        matches!(try_query(), Ok(ServiceState::Running))
+    }
+
     fn try_query() -> windows_service::Result<ServiceState> {
         let manager =
             ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
@@ -153,6 +157,11 @@ pub fn query_status_string() -> String {
         "Service '{}' control is only available on Windows.",
         dns_proxy_core::SERVICE_NAME
     )
+}
+
+#[cfg(not(windows))]
+pub fn is_running() -> bool {
+    false
 }
 
 #[cfg(not(windows))]

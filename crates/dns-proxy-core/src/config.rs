@@ -133,6 +133,8 @@ impl AppConfig {
     }
 
     pub fn load_or_default() -> Result<Self> {
+        // Creates ProgramData dir, applies Users ACL when new, migrates legacy LOCALAPPDATA once.
+        ensure_config_dir()?;
         let path = config_path()?;
         if path.exists() {
             Self::load_from(&path)

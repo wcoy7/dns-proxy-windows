@@ -50,12 +50,20 @@ Icon assets live in [`assets/`](assets/) (`dns-proxy.ico`, `dns-proxy-icon.png`)
 
 ## Windows installer (Inno Setup)
 
-A professional Setup wizard lives in [`installer/dns-proxy.iss`](installer/dns-proxy.iss). It installs the UI + service binaries under Program Files, adds Start Menu (and optional desktop) shortcuts, requests Administrator elevation, and can optionally register/start the `DnsProxy` Windows service.
+Packaging lives under [`installer/`](installer/):
 
-### Prerequisites
+| Path | Role |
+|---|---|
+| [`installer/dns-proxy.iss`](installer/dns-proxy.iss) | Inno Setup script (AppId, icons, files, shortcuts, optional service) |
+| [`installer/post-install-notes.txt`](installer/post-install-notes.txt) | Shown in the Setup wizard before install |
+| [`scripts/build-installer.ps1`](scripts/build-installer.ps1) | `cargo build --release` + compile with `ISCC.exe` |
 
-- Release binaries from `cargo build --release`
-- [Inno Setup 6](https://jrsoftware.org/isinfo.php) (`ISCC.exe` on `PATH`, or the default install location)
+The Setup EXE installs UI + service binaries to **Program Files\DNS Proxy**, adds a Start Menu shortcut (optional desktop shortcut), requests **Administrator** elevation, and can optionally register/start the `DnsProxy` Windows service. Uninstall (Apps & features) stops and removes the service when present.
+
+### Build-time prerequisites
+
+- Release binaries from `cargo build --release` (the `.iss` script errors if they are missing)
+- [Inno Setup 6](https://jrsoftware.org/isinfo.php) — needed only to **compile** the installer, not to run the installed app
 
 ```powershell
 winget install --id JRSoftware.InnoSetup -e
@@ -73,20 +81,36 @@ Or manually:
 
 ```powershell
 cargo build --release
-# Typical install paths (pick the one that exists on your machine):
+# Typical ISCC paths (pick the one that exists on your machine):
 & "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe" .\installer\dns-proxy.iss
 # or: & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" .\installer\dns-proxy.iss
 ```
 
-The Setup executable is written to:
+Output (gitignored under `dist/`):
 
 ```text
-dist\DNSProxySetup-0.1.0.exe
+dist\DNSProxySetup-*.exe
+# e.g. dist\DNSProxySetup-0.1.0.exe
 ```
 
-(`dist/` is gitignored — do not commit the built installer.)
+### Install and run
 
-After install: set adapter DNS to `127.0.0.1`, then `ipconfig /flushdns`. Uninstall from Apps & features; the uninstaller stops and removes the service when present.
+1. Run `dist\DNSProxySetup-*.exe` (UAC elevation required).
+2. On **Additional Tasks**, optionally enable:
+   - desktop shortcut
+   - **Install and start the DNS Proxy Windows service**
+3. Finish the wizard; optionally launch the control panel from the final page (or Start Menu → **DNS Proxy**).
+4. If you skipped the service task, from an elevated PowerShell in `C:\Program Files\DNS Proxy`:
+
+   ```powershell
+   .\dns-proxy-service.exe init-config
+   .\dns-proxy-service.exe install
+   .\dns-proxy-service.exe start
+   ```
+
+5. Point your adapter DNS to `127.0.0.1`, then `ipconfig /flushdns` (see [Point Windows at the proxy](#point-windows-at-the-proxy)).
+
+Per-user config remains at `%LOCALAPPDATA%\DNS Proxy\config.json` (see `config.example.json` in the install folder / repo root).
 
 ## Quick start (console)
 

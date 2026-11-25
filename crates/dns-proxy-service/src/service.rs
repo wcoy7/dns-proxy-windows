@@ -19,7 +19,7 @@ use windows_service::service_control_handler::{self, ServiceControlHandlerResult
 use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
 use windows_service::{define_windows_service, service_dispatcher};
 
-use crate::dns_server::{run_dns_proxy, RuntimeState};
+use crate::dns_server::RuntimeState;
 
 const SERVICE_TYPE: ServiceType = ServiceType::OWN_PROCESS;
 
@@ -53,6 +53,46 @@ fn run_service() -> Result<()> {
 
     let status_handle = service_control_handler::register(SERVICE_NAME, event_handler)?;
 
+    // Stay in StartPending until UDP :53 is bound — otherwise the UI can flip
+    // "Use DNS Proxy" while nothing is listening and break name resolution.
+    status_handle.set_service_status(ServiceStatus {
+        service_type: SERVICE_TYPE,
+        current_state: ServiceState::StartPending,
+        controls_accepted: ServiceControlAccept::empty(),
+        exit_code: ServiceExitCode::Win32(0),
+        checkpoint: 1,
+        wait_hint: Duration::from_secs(15),
+        process_id: None,
+    })?;
+
+    let config = AppConfig::load_or_default()?;
+    let state = RuntimeState::from_config(config);
+    let runtime = tokio::runtime::Runtime::new()?;
+
+    let listen = {
+        let cfg = state.config.read();
+        cfg.listen_addr()?
+    };
+    let bind_result = runtime.block_on(tokio::net::UdpSocket::bind(listen));
+    let sock = match bind_result {
+        Ok(s) => s,
+        Err(err) => {
+            error!(error = %err, %listen, "failed to bind DNS listen address");
+            let code = err.raw_os_error().unwrap_or(1).max(0) as u32;
+            status_handle.set_service_status(ServiceStatus {
+                service_type: SERVICE_TYPE,
+                current_state: ServiceState::Stopped,
+                controls_accepted: ServiceControlAccept::empty(),
+                exit_code: ServiceExitCode::Win32(code),
+                checkpoint: 0,
+                wait_hint: Duration::default(),
+                process_id: None,
+            })?;
+            bail!("failed to bind UDP {listen}: {err}");
+        }
+    };
+    info!("DNS proxy listening on {listen}");
+
     status_handle.set_service_status(ServiceStatus {
         service_type: SERVICE_TYPE,
         current_state: ServiceState::Running,
@@ -63,19 +103,15 @@ fn run_service() -> Result<()> {
         process_id: None,
     })?;
 
-    let config = AppConfig::load_or_default()?;
-    let state = RuntimeState::from_config(config);
-    let runtime = tokio::runtime::Runtime::new()?;
-
     runtime.block_on(async {
+        let sock = std::sync::Arc::new(sock);
         tokio::select! {
-            result = run_dns_proxy(state) => {
+            result = crate::dns_server::run_dns_proxy_on_socket(state, sock) => {
                 if let Err(err) = result {
                     error!(error = %err, "DNS proxy exited with error");
                 }
             }
             _ = async {
-                // Poll the shutdown channel without blocking the async runtime hard.
                 loop {
                     if shutdown_rx.try_recv().is_ok() {
                         break;

@@ -227,6 +227,39 @@ impl DnsProxyApp {
         self.last_adapter_refresh = Instant::now();
     }
 
+    /// If adapters still point at 127.0.0.1 but the proxy is dead, restore DNS.
+    fn watchdog_proxy_or_restore(&mut self) {
+        let using_proxy = DnsBackup::is_active()
+            || self
+                .adapters
+                .iter()
+                .any(|a| a.operational && a.points_at_proxy());
+        if !using_proxy {
+            return;
+        }
+        if dns_adapter::local_proxy_healthy() {
+            return;
+        }
+        tracing::error!("local proxy not answering while Use DNS Proxy is active — restoring DNS");
+        match dns_adapter::restore_proxy_dns() {
+            Ok(msg) => {
+                self.dns_error = format!(
+                    "Proxy stopped answering on 127.0.0.1:53 — DNS was restored automatically. {msg}"
+                );
+                self.status = self.dns_error.clone();
+                self.use_dns_proxy = false;
+            }
+            Err(err) => {
+                self.dns_error = format!(
+                    "Proxy is down on 127.0.0.1:53 and automatic restore failed: {err}. \
+                     Run elevated: .\\scripts\\restore-system-dns.ps1"
+                );
+                self.status = self.dns_error.clone();
+            }
+        }
+        self.refresh_adapters();
+    }
+
     fn refresh_dns_status_text(&mut self) {
         if self.adapters.is_empty() {
             self.dns_status = "No adapters detected.".into();
@@ -251,6 +284,15 @@ impl DnsProxyApp {
             self.dns_error =
                 "Proxy service is not running. Start it before switching adapter DNS \
                  (to avoid breaking name resolution)."
+                    .into();
+            self.use_dns_proxy = false;
+            return;
+        }
+        if !dns_adapter::local_proxy_healthy() {
+            self.dns_error =
+                "DnsProxy service is marked Running but 127.0.0.1:53 is not answering. \
+                 Stop/Start the service, or run `dns-proxy-service console` and \
+                 .\\scripts\\smoke-dns-proxy.ps1 before enabling Use DNS Proxy."
                     .into();
             self.use_dns_proxy = false;
             return;
@@ -352,10 +394,12 @@ impl eframe::App for DnsProxyApp {
         }
 
         // Periodic light refresh so status stays honest while the window is open.
-        if self.window.is_visible() && self.last_adapter_refresh.elapsed() > Duration::from_secs(8)
+        // Also watch for a dead proxy while adapters still point at 127.0.0.1.
+        if self.window.is_visible() && self.last_adapter_refresh.elapsed() > Duration::from_secs(5)
         {
             self.refresh_adapters();
             self.refresh_service_status();
+            self.watchdog_proxy_or_restore();
         }
 
         // Keep receiving tray events while hidden.
@@ -453,6 +497,7 @@ impl eframe::App for DnsProxyApp {
 
                     let elevated = dns_adapter::is_elevated();
                     let service_running = service_ctl::is_running();
+                    let proxy_ok = dns_adapter::local_proxy_healthy();
                     if !elevated {
                         ui.colored_label(
                             egui::Color32::from_rgb(180, 120, 40),
@@ -463,6 +508,11 @@ impl eframe::App for DnsProxyApp {
                         ui.colored_label(
                             egui::Color32::from_rgb(180, 120, 40),
                             "Proxy service is not running — Start it below before enabling Use DNS Proxy.",
+                        );
+                    } else if !proxy_ok {
+                        ui.colored_label(
+                            egui::Color32::from_rgb(200, 80, 60),
+                            "Service Running but 127.0.0.1:53 not answering — do not enable Use DNS Proxy.",
                         );
                     }
 
@@ -501,14 +551,14 @@ impl eframe::App for DnsProxyApp {
                         if ui.button("Restore previous DNS").clicked() {
                             self.disable_dns_proxy();
                         }
-                        if !self.dns_error.is_empty()
-                            && ui.button("Clear error").clicked()
-                        {
+                        if !self.dns_error.is_empty() && ui.button("Clear error").clicked() {
                             self.dns_error.clear();
                         }
                     });
                     ui.small(
-                        "Requires Administrator + running service. Previous DNS is saved under %ProgramData%\\DNS Proxy\\dns-backup.json.",
+                        "Requires Administrator + a healthy proxy on 127.0.0.1:53. \
+                         Previous DNS is saved under %ProgramData%\\DNS Proxy\\dns-backup.json. \
+                         Emergency: .\\scripts\\restore-system-dns.ps1",
                     );
                 });
 

@@ -46,15 +46,17 @@ pub async fn run_dns_proxy(state: Arc<RuntimeState>) -> Result<()> {
         cfg.listen_addr()?
     };
 
-    let sock = Arc::new(
-        UdpSocket::bind(listen)
-            .await
-            .with_context(|| {
-                format!("failed to bind UDP {listen} (need Administrator for port 53?)")
-            })?,
-    );
+    let sock = UdpSocket::bind(listen)
+        .await
+        .with_context(|| {
+            format!("failed to bind UDP {listen} (need Administrator for port 53?)")
+        })?;
     info!("DNS proxy listening on {listen}");
+    run_dns_proxy_on_socket(state, Arc::new(sock)).await
+}
 
+/// Serve on an already-bound socket (used by the Windows service after StartPending → bind).
+pub async fn run_dns_proxy_on_socket(state: Arc<RuntimeState>, sock: Arc<UdpSocket>) -> Result<()> {
     let mut buf = vec![0u8; MAX_UDP];
     loop {
         let (len, peer) = sock.recv_from(&mut buf).await?;
@@ -118,10 +120,21 @@ async fn handle_query(
         return Ok(());
     }
 
-    let response_bytes = forward_upstream(&upstreams, packet).await?;
-    sock.send_to(&response_bytes, peer).await?;
-    if verbose {
-        debug!(%peer, %qname, ?qtype, "forwarded");
+    match forward_upstream(&upstreams, packet).await {
+        Ok(response_bytes) => {
+            sock.send_to(&response_bytes, peer).await?;
+            if verbose {
+                debug!(%peer, %qname, ?qtype, "forwarded");
+            }
+        }
+        Err(err) => {
+            // Never leave the stub resolver hanging — Windows treats silence as timeout
+            // and the whole machine looks "offline" when adapters point at 127.0.0.1.
+            warn!(%peer, %qname, ?qtype, error = %err, "upstream forward failed; SERVFAIL");
+            let response = build_servfail(&request);
+            let bytes = response.to_bytes()?;
+            sock.send_to(&bytes, peer).await?;
+        }
     }
     Ok(())
 }
@@ -159,6 +172,20 @@ fn build_nxdomain(request: &Message) -> Message {
     response.set_recursion_desired(request.recursion_desired());
     response.set_recursion_available(true);
     response.set_response_code(ResponseCode::NXDomain);
+    for q in request.queries() {
+        response.add_query(q.clone());
+    }
+    response
+}
+
+fn build_servfail(request: &Message) -> Message {
+    let mut response = Message::new();
+    response.set_id(request.id());
+    response.set_message_type(MessageType::Response);
+    response.set_op_code(OpCode::Query);
+    response.set_recursion_desired(request.recursion_desired());
+    response.set_recursion_available(true);
+    response.set_response_code(ResponseCode::ServFail);
     for q in request.queries() {
         response.add_query(q.clone());
     }

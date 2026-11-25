@@ -1,4 +1,5 @@
 mod dns_server;
+mod logging;
 
 #[cfg(windows)]
 mod service;
@@ -48,12 +49,16 @@ fn init_logging() {
 }
 
 fn main() -> Result<()> {
-    init_logging();
+    logging::install_panic_hook();
     let cli = Cli::parse();
 
     match cli.command {
-        Some(Commands::Console) => run_console()?,
+        Some(Commands::Console) => {
+            init_logging();
+            run_console()?;
+        }
         Some(Commands::InitConfig) => {
+            init_logging();
             let cfg = AppConfig::load_or_default()?;
             let path = dns_proxy_core::config_path()?;
             println!("Config ready at {}", path.display());
@@ -63,15 +68,30 @@ fn main() -> Result<()> {
             );
         }
         #[cfg(windows)]
-        Some(Commands::Install) => service::install_service()?,
+        Some(Commands::Install) => {
+            init_logging();
+            service::install_service()?;
+        }
         #[cfg(windows)]
-        Some(Commands::Uninstall) => service::uninstall_service()?,
+        Some(Commands::Uninstall) => {
+            init_logging();
+            service::uninstall_service()?;
+        }
         #[cfg(windows)]
-        Some(Commands::Start) => service::start_service_cmd()?,
+        Some(Commands::Start) => {
+            init_logging();
+            service::start_service_cmd()?;
+        }
         #[cfg(windows)]
-        Some(Commands::Stop) => service::stop_service_cmd()?,
+        Some(Commands::Stop) => {
+            init_logging();
+            service::stop_service_cmd()?;
+        }
         #[cfg(windows)]
-        Some(Commands::Status) => service::service_status_cmd()?,
+        Some(Commands::Status) => {
+            init_logging();
+            service::service_status_cmd()?;
+        }
         #[cfg(not(windows))]
         Some(
             Commands::Install
@@ -86,9 +106,13 @@ fn main() -> Result<()> {
             #[cfg(windows)]
             {
                 // When launched by the Service Control Manager, there is no subcommand.
+                // Prefer file logging — LocalSystem has no attached console.
+                logging::init_service_file_logging();
                 if let Err(err) = service::run_service_dispatcher() {
                     // Fall back to console if not started by SCM (e.g. double-click).
-                    tracing::warn!(error = %err, "service dispatcher unavailable; use `console`");
+                    let _ = crate::logging::append_crash_line(&format!(
+                        "service dispatcher unavailable: {err}"
+                    ));
                     eprintln!("Tip: run `dns-proxy-service console` for foreground mode.");
                     eprintln!("     run `dns-proxy-service install` (as Admin) to register the service.");
                     std::process::exit(1);

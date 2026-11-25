@@ -46,26 +46,54 @@ pub async fn run_dns_proxy(state: Arc<RuntimeState>) -> Result<()> {
         cfg.listen_addr()?
     };
 
-    let sock = Arc::new(
-        UdpSocket::bind(listen)
-            .await
-            .with_context(|| {
-                format!("failed to bind UDP {listen} (need Administrator for port 53?)")
-            })?,
-    );
+    let sock = UdpSocket::bind(listen)
+        .await
+        .with_context(|| {
+            format!("failed to bind UDP {listen} (need Administrator for port 53?)")
+        })?;
     info!("DNS proxy listening on {listen}");
+    run_dns_proxy_on_socket(state, Arc::new(sock)).await
+}
 
+/// Serve on an already-bound socket (used by the Windows service after StartPending → bind).
+///
+/// **Important:** transient `recv_from` errors (common on Windows UDP, e.g. ICMP
+/// port-unreachable mapped as connection reset) must NOT tear down the service.
+/// Exiting this loop stops DnsProxy while adapters may still point at 127.0.0.1.
+pub async fn run_dns_proxy_on_socket(state: Arc<RuntimeState>, sock: Arc<UdpSocket>) -> Result<()> {
     let mut buf = vec![0u8; MAX_UDP];
+    let mut consecutive_recv_errors: u32 = 0;
     loop {
-        let (len, peer) = sock.recv_from(&mut buf).await?;
-        let packet = buf[..len].to_vec();
-        let state = Arc::clone(&state);
-        let sock = Arc::clone(&sock);
-        tokio::spawn(async move {
-            if let Err(err) = handle_query(&state, &sock, peer, &packet).await {
-                debug!(%peer, error = %err, "query handling failed");
+        match sock.recv_from(&mut buf).await {
+            Ok((len, peer)) => {
+                consecutive_recv_errors = 0;
+                let packet = buf[..len].to_vec();
+                let state = Arc::clone(&state);
+                let sock = Arc::clone(&sock);
+                tokio::spawn(async move {
+                    if let Err(err) = handle_query(&state, &sock, peer, &packet).await {
+                        debug!(%peer, error = %err, "query handling failed");
+                    }
+                });
             }
-        });
+            Err(err) => {
+                consecutive_recv_errors = consecutive_recv_errors.saturating_add(1);
+                warn!(
+                    error = %err,
+                    consecutive_recv_errors,
+                    "UDP recv_from failed — continuing (will not stop the service)"
+                );
+                // Brief backoff so a wedged socket cannot spin the CPU.
+                let delay_ms = (50u64 * u64::from(consecutive_recv_errors.min(20))).min(1_000);
+                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                // Only give up after a prolonged hard failure streak (e.g. socket closed).
+                if consecutive_recv_errors >= 100 {
+                    return Err(err).context(
+                        "UDP recv_from failed repeatedly — listen socket likely closed",
+                    );
+                }
+            }
+        }
     }
 }
 
@@ -118,10 +146,21 @@ async fn handle_query(
         return Ok(());
     }
 
-    let response_bytes = forward_upstream(&upstreams, packet).await?;
-    sock.send_to(&response_bytes, peer).await?;
-    if verbose {
-        debug!(%peer, %qname, ?qtype, "forwarded");
+    match forward_upstream(&upstreams, packet).await {
+        Ok(response_bytes) => {
+            sock.send_to(&response_bytes, peer).await?;
+            if verbose {
+                debug!(%peer, %qname, ?qtype, "forwarded");
+            }
+        }
+        Err(err) => {
+            // Never leave the stub resolver hanging — Windows treats silence as timeout
+            // and the whole machine looks "offline" when adapters point at 127.0.0.1.
+            warn!(%peer, %qname, ?qtype, error = %err, "upstream forward failed; SERVFAIL");
+            let response = build_servfail(&request);
+            let bytes = response.to_bytes()?;
+            sock.send_to(&bytes, peer).await?;
+        }
     }
     Ok(())
 }
@@ -159,6 +198,20 @@ fn build_nxdomain(request: &Message) -> Message {
     response.set_recursion_desired(request.recursion_desired());
     response.set_recursion_available(true);
     response.set_response_code(ResponseCode::NXDomain);
+    for q in request.queries() {
+        response.add_query(q.clone());
+    }
+    response
+}
+
+fn build_servfail(request: &Message) -> Message {
+    let mut response = Message::new();
+    response.set_id(request.id());
+    response.set_message_type(MessageType::Response);
+    response.set_op_code(OpCode::Query);
+    response.set_recursion_desired(request.recursion_desired());
+    response.set_recursion_available(true);
+    response.set_response_code(ResponseCode::ServFail);
     for q in request.queries() {
         response.add_query(q.clone());
     }

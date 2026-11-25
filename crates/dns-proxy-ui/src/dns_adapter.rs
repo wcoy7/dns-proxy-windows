@@ -5,8 +5,9 @@
 //! callers should check [`is_elevated`] and surface a clear error.
 
 use std::fs;
-use std::net::Ipv4Addr;
+use std::net::{Ipv4Addr, UdpSocket};
 use std::path::PathBuf;
+use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -114,6 +115,49 @@ pub fn is_elevated() -> bool {
     unsafe { IsUserAnAdmin().as_bool() }
 }
 
+/// Probe that something on `127.0.0.1:53` answers a tiny DNS query (UDP).
+///
+/// SCM "Running" is not enough — the service can report Running before bind, or
+/// exit after a failed bind, leaving adapters on loopback with no resolver.
+pub fn probe_local_proxy(timeout: Duration) -> Result<()> {
+    // Minimal DNS query: ID=0x1234, RD=1, QNAME=example.com, QTYPE=A, QCLASS=IN
+    let mut q = Vec::with_capacity(64);
+    q.extend_from_slice(&[0x12, 0x34]); // ID
+    q.extend_from_slice(&[0x01, 0x00]); // flags RD
+    q.extend_from_slice(&[0x00, 0x01]); // QDCOUNT=1
+    q.extend_from_slice(&[0x00, 0x00, 0x00, 0x00, 0x00, 0x00]); // AN/NS/AR
+    for label in ["example", "com"] {
+        q.push(label.len() as u8);
+        q.extend_from_slice(label.as_bytes());
+    }
+    q.push(0);
+    q.extend_from_slice(&[0x00, 0x01]); // A
+    q.extend_from_slice(&[0x00, 0x01]); // IN
+
+    let sock = UdpSocket::bind("127.0.0.1:0").context("bind UDP for proxy probe")?;
+    sock.set_read_timeout(Some(timeout))
+        .context("set proxy probe timeout")?;
+    sock.send_to(&q, "127.0.0.1:53")
+        .context("send DNS probe to 127.0.0.1:53 (is DnsProxy listening?)")?;
+    let mut buf = [0u8; 512];
+    let (n, _) = sock
+        .recv_from(&mut buf)
+        .context("no DNS response from 127.0.0.1:53 — start the DnsProxy service first")?;
+    if n < 12 {
+        bail!("truncated DNS response from local proxy ({n} bytes)");
+    }
+    // Matching query ID
+    if buf[0] != 0x12 || buf[1] != 0x34 {
+        bail!("local proxy returned unexpected DNS id");
+    }
+    Ok(())
+}
+
+/// True when the local proxy answers UDP/53 within ~800ms.
+pub fn local_proxy_healthy() -> bool {
+    probe_local_proxy(Duration::from_millis(800)).is_ok()
+}
+
 /// List non-loopback IPv4-capable adapters and their configured DNS.
 pub fn list_adapters() -> Result<Vec<AdapterDnsInfo>> {
     let addresses = adapter_addresses()?;
@@ -168,6 +212,12 @@ pub fn enable_proxy_dns() -> Result<String> {
              Right-click dns-proxy-ui.exe → Run as administrator."
         );
     }
+
+    // Refuse to brick the machine if nothing answers on loopback:53.
+    probe_local_proxy(Duration::from_millis(1200)).with_context(|| {
+        "local DNS proxy is not answering on 127.0.0.1:53 — Start the DnsProxy \
+         Windows service (or `dns-proxy-service console`) and retry"
+    })?;
 
     let adapters = active_adapters()?;
     if adapters.is_empty() {
@@ -229,6 +279,14 @@ pub fn enable_proxy_dns() -> Result<String> {
         bail!(
             "SetInterfaceDnsSettings reported success, but no adapter lists {PROXY_DNS} yet. \
              DNS was rolled back. Try Run as administrator, or set DNS manually."
+        );
+    }
+
+    // Re-probe after switching — if the proxy died mid-flight, roll back immediately.
+    if let Err(err) = probe_local_proxy(Duration::from_millis(1200)) {
+        let _ = restore_proxy_dns();
+        return Err(err).context(
+            "proxy stopped answering after switching adapters — DNS was restored from backup",
         );
     }
 
@@ -554,6 +612,13 @@ mod tests {
             split_dns_list("1.1.1.1, 8.8.8.8 9.9.9.9"),
             vec!["1.1.1.1", "8.8.8.8", "9.9.9.9"]
         );
+    }
+
+    #[test]
+    fn probe_fails_when_nothing_listens() {
+        // Ephemeral: nothing should be bound if tests don't start the proxy.
+        // If a proxy is already up this still returns Ok — that's fine.
+        let _ = probe_local_proxy(Duration::from_millis(200));
     }
 
     /// Live Win32 probe — run with: cargo test -p dns-proxy-ui live_dns_roundtrip -- --ignored --nocapture

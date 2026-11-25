@@ -195,7 +195,20 @@ Or use the control panel / tray menu (also needs elevation for install/uninstall
 ```powershell
 .\scripts\install-service.ps1   # build release (if needed) + install + start
 .\scripts\uninstall-service.ps1
+.\scripts\smoke-dns-proxy.ps1   # verify 127.0.0.1:53 answers (does NOT change adapter DNS)
+.\scripts\restore-system-dns.ps1 # EMERGENCY: undo 127.0.0.1 adapter DNS if the proxy is down
 ```
+
+If web/ping fail after enabling **Use DNS Proxy**, the proxy is probably not answering on `127.0.0.1:53`. Run elevated:
+
+```powershell
+.\scripts\restore-system-dns.ps1
+.\scripts\diagnose-dns-proxy-service.ps1
+```
+
+Service diagnostics also land in `%ProgramData%\DNS Proxy\service.log` (and `service-panic.txt` on panic). The service is configured to **auto-restart** on unexpected exit; the UI watchdog restores adapter DNS if the proxy dies while Use DNS Proxy is active (including when minimized to tray).
+
+Then fix/start the service and only re-enable Use DNS Proxy after `.\scripts\smoke-dns-proxy.ps1` passes.
 
 ## Control panel & system tray
 

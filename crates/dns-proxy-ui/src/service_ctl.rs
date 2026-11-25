@@ -7,8 +7,8 @@ mod win {
 
     use dns_proxy_core::{SERVICE_DESCRIPTION, SERVICE_DISPLAY_NAME, SERVICE_NAME};
     use windows_service::service::{
-        ServiceAccess, ServiceErrorControl, ServiceInfo, ServiceStartType, ServiceState,
-        ServiceType,
+        ServiceAccess, ServiceAction, ServiceActionType, ServiceErrorControl, ServiceFailureActions,
+        ServiceFailureResetPeriod, ServiceInfo, ServiceStartType, ServiceState, ServiceType,
     };
     use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
 
@@ -53,8 +53,33 @@ mod win {
             account_name: None,
             account_password: None,
         };
-        let service = manager.create_service(&info, ServiceAccess::CHANGE_CONFIG)?;
+        let service = manager.create_service(
+            &info,
+            ServiceAccess::CHANGE_CONFIG | ServiceAccess::START,
+        )?;
         service.set_description(SERVICE_DESCRIPTION)?;
+        // Restart if the process exits/crashes so adapters are not left on 127.0.0.1.
+        let actions = vec![
+            ServiceAction {
+                action_type: ServiceActionType::Restart,
+                delay: Duration::from_secs(3),
+            },
+            ServiceAction {
+                action_type: ServiceActionType::Restart,
+                delay: Duration::from_secs(10),
+            },
+            ServiceAction {
+                action_type: ServiceActionType::Restart,
+                delay: Duration::from_secs(30),
+            },
+        ];
+        let _ = service.update_failure_actions(ServiceFailureActions {
+            reset_period: ServiceFailureResetPeriod::After(Duration::from_secs(86_400)),
+            reboot_msg: None,
+            command: None,
+            actions: Some(actions),
+        });
+        let _ = service.set_failure_actions_on_non_crash_failures(true);
         Ok(format!(
             "Installed service using {}",
             service_exe.display()

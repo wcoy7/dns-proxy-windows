@@ -12,14 +12,15 @@ use dns_proxy_core::{
 };
 use tracing::{error, info};
 use windows_service::service::{
-    ServiceAccess, ServiceControl, ServiceControlAccept, ServiceErrorControl, ServiceExitCode,
+    ServiceAccess, ServiceAction, ServiceActionType, ServiceControl, ServiceControlAccept,
+    ServiceErrorControl, ServiceExitCode, ServiceFailureActions, ServiceFailureResetPeriod,
     ServiceInfo, ServiceStartType, ServiceState, ServiceStatus, ServiceType,
 };
 use windows_service::service_control_handler::{self, ServiceControlHandlerResult};
 use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
 use windows_service::{define_windows_service, service_dispatcher};
 
-use crate::dns_server::{run_dns_proxy, RuntimeState};
+use crate::dns_server::RuntimeState;
 
 const SERVICE_TYPE: ServiceType = ServiceType::OWN_PROCESS;
 
@@ -34,6 +35,9 @@ pub fn run_service_dispatcher() -> Result<()> {
 fn service_main(_args: Vec<OsString>) {
     if let Err(err) = run_service() {
         error!(error = %err, "service failed");
+        let _ = crate::logging::append_crash_line(&format!("service failed: {err:#}"));
+        // Do not leave adapters on 127.0.0.1 if we are exiting abnormally.
+        crate::logging::emergency_restore_loopback_dns();
     }
 }
 
@@ -53,6 +57,46 @@ fn run_service() -> Result<()> {
 
     let status_handle = service_control_handler::register(SERVICE_NAME, event_handler)?;
 
+    // Stay in StartPending until UDP :53 is bound — otherwise the UI can flip
+    // "Use DNS Proxy" while nothing is listening and break name resolution.
+    status_handle.set_service_status(ServiceStatus {
+        service_type: SERVICE_TYPE,
+        current_state: ServiceState::StartPending,
+        controls_accepted: ServiceControlAccept::empty(),
+        exit_code: ServiceExitCode::Win32(0),
+        checkpoint: 1,
+        wait_hint: Duration::from_secs(15),
+        process_id: None,
+    })?;
+
+    let config = AppConfig::load_or_default()?;
+    let state = RuntimeState::from_config(config);
+    let runtime = tokio::runtime::Runtime::new()?;
+
+    let listen = {
+        let cfg = state.config.read();
+        cfg.listen_addr()?
+    };
+    let bind_result = runtime.block_on(tokio::net::UdpSocket::bind(listen));
+    let sock = match bind_result {
+        Ok(s) => s,
+        Err(err) => {
+            error!(error = %err, %listen, "failed to bind DNS listen address");
+            let code = err.raw_os_error().unwrap_or(1).max(0) as u32;
+            status_handle.set_service_status(ServiceStatus {
+                service_type: SERVICE_TYPE,
+                current_state: ServiceState::Stopped,
+                controls_accepted: ServiceControlAccept::empty(),
+                exit_code: ServiceExitCode::Win32(code),
+                checkpoint: 0,
+                wait_hint: Duration::default(),
+                process_id: None,
+            })?;
+            bail!("failed to bind UDP {listen}: {err}");
+        }
+    };
+    info!("DNS proxy listening on {listen}");
+
     status_handle.set_service_status(ServiceStatus {
         service_type: SERVICE_TYPE,
         current_state: ServiceState::Running,
@@ -63,19 +107,30 @@ fn run_service() -> Result<()> {
         process_id: None,
     })?;
 
-    let config = AppConfig::load_or_default()?;
-    let state = RuntimeState::from_config(config);
-    let runtime = tokio::runtime::Runtime::new()?;
-
+    let mut unexpected_exit = false;
     runtime.block_on(async {
+        let sock = std::sync::Arc::new(sock);
         tokio::select! {
-            result = run_dns_proxy(state) => {
-                if let Err(err) = result {
-                    error!(error = %err, "DNS proxy exited with error");
+            result = crate::dns_server::run_dns_proxy_on_socket(state, sock) => {
+                match result {
+                    Ok(()) => {
+                        // Loop only returns Ok on theoretical clean end — treat as unexpected.
+                        error!("DNS proxy loop ended without stop signal");
+                        let _ = crate::logging::append_crash_line(
+                            "DNS proxy loop ended without stop signal",
+                        );
+                        unexpected_exit = true;
+                    }
+                    Err(err) => {
+                        error!(error = %err, "DNS proxy exited with error");
+                        let _ = crate::logging::append_crash_line(&format!(
+                            "DNS proxy exited: {err:#}"
+                        ));
+                        unexpected_exit = true;
+                    }
                 }
             }
             _ = async {
-                // Poll the shutdown channel without blocking the async runtime hard.
                 loop {
                     if shutdown_rx.try_recv().is_ok() {
                         break;
@@ -88,11 +143,15 @@ fn run_service() -> Result<()> {
         }
     });
 
+    if unexpected_exit {
+        crate::logging::emergency_restore_loopback_dns();
+    }
+
     status_handle.set_service_status(ServiceStatus {
         service_type: SERVICE_TYPE,
         current_state: ServiceState::Stopped,
         controls_accepted: ServiceControlAccept::empty(),
-        exit_code: ServiceExitCode::Win32(0),
+        exit_code: ServiceExitCode::Win32(if unexpected_exit { 1 } else { 0 }),
         checkpoint: 0,
         wait_hint: Duration::default(),
         process_id: None,
@@ -119,8 +178,12 @@ pub fn install_service() -> Result<()> {
         account_password: None,
     };
 
-    let service = manager.create_service(&service_info, ServiceAccess::CHANGE_CONFIG)?;
+    let service = manager.create_service(
+        &service_info,
+        ServiceAccess::CHANGE_CONFIG | ServiceAccess::START,
+    )?;
     service.set_description(SERVICE_DESCRIPTION)?;
+    configure_failure_actions(&service)?;
     info!(
         "installed Windows service '{}' -> {}",
         SERVICE_NAME,
@@ -129,6 +192,36 @@ pub fn install_service() -> Result<()> {
     println!("Installed service '{SERVICE_NAME}'.");
     println!("Start it with:  sc start {SERVICE_NAME}");
     println!("Or from an elevated PowerShell: Start-Service {SERVICE_NAME}");
+    Ok(())
+}
+
+/// Restart on crash / unexpected exit so a transient failure does not leave DNS on 127.0.0.1.
+fn configure_failure_actions(
+    service: &windows_service::service::Service,
+) -> windows_service::Result<()> {
+    let actions = vec![
+        ServiceAction {
+            action_type: ServiceActionType::Restart,
+            delay: Duration::from_secs(3),
+        },
+        ServiceAction {
+            action_type: ServiceActionType::Restart,
+            delay: Duration::from_secs(10),
+        },
+        ServiceAction {
+            action_type: ServiceActionType::Restart,
+            delay: Duration::from_secs(30),
+        },
+    ];
+    let failure_actions = ServiceFailureActions {
+        reset_period: ServiceFailureResetPeriod::After(Duration::from_secs(86_400)),
+        reboot_msg: None,
+        command: None,
+        actions: Some(actions),
+    };
+    service.update_failure_actions(failure_actions)?;
+    // Also apply restart when the process exits with a non-zero code (not only hard crashes).
+    service.set_failure_actions_on_non_crash_failures(true)?;
     Ok(())
 }
 

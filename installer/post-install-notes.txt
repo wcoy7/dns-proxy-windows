@@ -1,4 +1,9 @@
-DNS Proxy Setup (0.2.0)
+DNS Proxy Setup (0.2.1)
+
+Architecture: this Setup is built for a single Windows CPU architecture
+(arm64 or x64). Install the matching DNSProxySetup-*-arm64.exe or
+DNSProxySetup-*-x64.exe for your PC (Settings → System → About →
+System type, or $env:PROCESSOR_ARCHITECTURE).
 
 After installation:
 

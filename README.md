@@ -45,7 +45,16 @@ Point your machine at `127.0.0.1`, pick Google / Cloudflare / OpenDNS (or your o
 | `ARM64` | `aarch64-pc-windows-msvc` | `DNSProxySetup-<ver>-arm64.exe` |
 | `AMD64` | `x86_64-pc-windows-msvc` | `DNSProxySetup-<ver>-x64.exe` |
 
-Installing the wrong arch produces **CreateProcess failed: code 216** (“This version of %1 is not compatible…”), especially from Setup’s post-install `init-config` / service steps. Always use `.\scripts\build-installer.ps1` on the target machine (or pass `-TargetArch arm64|x64`).
+Installing the wrong arch produces **CreateProcess failed: code 216** (“This version of %1 is not compatible…”), especially from Setup’s post-install `init-config` / service steps.
+
+**Build for the PC that will run Setup, not for the build host.** Cloud/self-hosted agents may report a different CPU than your physical box (e.g. a QEMU ARM64 worker vs an Intel x64 laptop). For an Intel/AMD PC always force:
+
+```powershell
+.\scripts\build-installer.ps1 -TargetArch x64
+# → dist\DNSProxySetup-<ver>-x64.exe
+```
+
+On Windows on Arm: `-TargetArch arm64`. Omit `-TargetArch` only when building on the same machine that will install.
 
 ## Build
 
